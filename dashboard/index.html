@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales Data Analysis Dashboard</title>
+<style>
+  :root { --bg:#f3f5f7; --card:#fff; --text:#1c2733; --muted:#5f6c7a; --line:#dde3e8; --main:#1f6f8b; --warn:#c0392b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { background:#16384a; color:#fff; padding:18px 28px; }
+  header h1 { margin:0; font-size:22px; font-weight:600; }
+  header p { margin:4px 0 0; font-size:13px; opacity:.8; }
+  main { max-width:1150px; margin:0 auto; padding:20px; }
+  .filters { display:flex; flex-wrap:wrap; gap:14px; align-items:end; margin-bottom:16px; }
+  .filters label { font-size:13px; color:var(--muted); display:flex; flex-direction:column; gap:4px; }
+  select, button { padding:7px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; font-size:14px; }
+  button { cursor:pointer; }
+  .kpis { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  .kpi .label { font-size:13px; color:var(--muted); }
+  .kpi .value { font-size:26px; font-weight:600; margin-top:4px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .wide { grid-column: 1 / -1; }
+  .card h2 { margin:0 0 10px; font-size:15px; font-weight:600; }
+  .chart { position:relative; height:290px; }
+  .wide .chart { height:300px; }
+  footer { text-align:center; font-size:12px; color:var(--muted); padding:18px; }
+  @media (max-width:760px) { .kpis { grid-template-columns:1fr 1fr; } .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Sales Data Analysis Dashboard</h1>
+  <p>Superstore sales, Jan 2014 - Dec 2017 &middot; use the filters to change every number and chart</p>
+</header>
+
+<main>
+  <div class="filters">
+    <label>Year <select id="fYear"></select></label>
+    <label>Region <select id="fRegion"></select></label>
+    <label>Category <select id="fCategory"></select></label>
+    <button id="reset">Reset filters</button>
+  </div>
+
+  <div class="kpis">
+    <div class="card kpi"><div class="label">Total Sales</div><div class="value" id="kSales"></div></div>
+    <div class="card kpi"><div class="label">Total Orders</div><div class="value" id="kOrders"></div></div>
+    <div class="card kpi"><div class="label">Average Order Value</div><div class="value" id="kAov"></div></div>
+    <div class="card kpi"><div class="label">Profit Margin</div><div class="value" id="kMargin"></div></div>
+  </div>
+
+  <div class="grid">
+    <div class="card wide"><h2>Monthly Sales</h2><div class="chart"><canvas id="cMonthly"></canvas></div></div>
+    <div class="card"><h2>Top 10 Products by Sales</h2><div class="chart"><canvas id="cProducts"></canvas></div></div>
+    <div class="card"><h2>Sales by Region</h2><div class="chart"><canvas id="cRegion"></canvas></div></div>
+    <div class="card"><h2>Sales by Category</h2><div class="chart"><canvas id="cCategory"></canvas></div></div>
+    <div class="card"><h2>Profit by Category</h2><div class="chart"><canvas id="cProfit"></canvas></div></div>
+  </div>
+</main>
+<footer>Data: Superstore sample dataset &middot; Built with Python (Pandas) and Chart.js &middot; Numbers come from dashboard/data.js, created by the notebook</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="data.js"></script>
+<script>
+// ---------- 1. Read the data ----------
+// Each row in DASHBOARD_DATA.rows is: [year, month, region, category, product, order, sales, profit]
+// region / category / product / order are numbers that point into the lists in DASHBOARD_DATA.
+const D = DASHBOARD_DATA;
+const MAIN = "#1f6f8b", RED = "#c0392b";
+const money = n => "$" + Math.round(n).toLocaleString("en-US");
+
+// ---------- 2. Calculation (pure function: filters in, summary out) ----------
+// SUMMARY-START
+function summarise(year, region, category) {
+  const monthly = {}, products = {}, regions = {}, cats = {}, catProfit = {};
+  const orders = new Set();
+  let sales = 0, profit = 0;
+  for (const r of D.rows) {
+    if (year !== "All" && r[0] !== Number(year)) continue;
+    if (region !== "All" && D.regions[r[2]] !== region) continue;
+    if (category !== "All" && D.categories[r[3]] !== category) continue;
+    const key = r[0] + "-" + String(r[1]).padStart(2, "0");
+    monthly[key] = (monthly[key] || 0) + r[6];
+    products[r[4]] = (products[r[4]] || 0) + r[6];
+    regions[D.regions[r[2]]] = (regions[D.regions[r[2]]] || 0) + r[6];
+    cats[D.categories[r[3]]] = (cats[D.categories[r[3]]] || 0) + r[6];
+    catProfit[D.categories[r[3]]] = (catProfit[D.categories[r[3]]] || 0) + r[7];
+    orders.add(r[5]);
+    sales += r[6]; profit += r[7];
+  }
+  const top = Object.entries(products).sort((a, b) => b[1] - a[1]).slice(0, 10)
+                    .map(([i, v]) => [D.products[i], v]);
+  return { sales, profit, orders: orders.size, monthly, top, regions, cats, catProfit };
+}
+// SUMMARY-END
+
+// ---------- 3. Filters ----------
+function fill(id, values) {
+  document.getElementById(id).innerHTML = ["All", ...values].map(v => `<option>${v}</option>`).join("");
+}
+fill("fYear", [...new Set(D.rows.map(r => r[0]))].sort());
+fill("fRegion", D.regions);
+fill("fCategory", D.categories);
+
+// ---------- 4. Charts ----------
+const charts = {};
+function draw(id, type, labels, values, opts = {}) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), {
+    type: type,
+    data: { labels: labels, datasets: [{ data: values, backgroundColor: opts.colors || MAIN,
+            borderColor: type === "line" ? MAIN : undefined, pointRadius: 2, tension: 0.2 }] },
+    options: {
+      maintainAspectRatio: false,
+      indexAxis: opts.horizontal ? "y" : "x",
+      plugins: { legend: { display: type === "doughnut", position: "right" },
+                 tooltip: { callbacks: { label: c => " " + money(c.parsed.x !== undefined && opts.horizontal ? c.parsed.x : (c.parsed.y !== undefined ? c.parsed.y : c.parsed)) } } },
+      scales: type === "doughnut" ? {} : { [opts.horizontal ? "x" : "y"]: { ticks: { callback: v => "$" + v.toLocaleString("en-US") } } }
+    }
+  });
+}
+
+function update() {
+  const s = summarise(fYear.value, fRegion.value, fCategory.value);
+  kSales.textContent = money(s.sales);
+  kOrders.textContent = s.orders.toLocaleString("en-US");
+  kAov.textContent = s.orders ? money(s.sales / s.orders) : "-";
+  kMargin.textContent = s.sales ? (s.profit / s.sales * 100).toFixed(1) + "%" : "-";
+
+  const months = Object.keys(s.monthly).sort();
+  draw("cMonthly", "line", months, months.map(m => s.monthly[m]));
+
+  draw("cProducts", "bar", s.top.map(t => t[0].length > 34 ? t[0].slice(0, 32) + "..." : t[0]),
+       s.top.map(t => t[1]), { horizontal: true });
+
+  const reg = Object.keys(s.regions).sort();
+  draw("cRegion", "bar", reg, reg.map(k => s.regions[k]));
+
+  const cat = Object.keys(s.cats).sort();
+  draw("cCategory", "doughnut", cat, cat.map(k => s.cats[k]), { colors: ["#1f6f8b", "#e07a1f", "#8aa6b1"] });
+  draw("cProfit", "bar", cat, cat.map(k => s.catProfit[k]), { colors: cat.map(k => s.catProfit[k] < 0 ? RED : MAIN) });
+}
+
+[fYear, fRegion, fCategory].forEach(el => el.addEventListener("change", update));
+reset.addEventListener("click", () => { fYear.value = fRegion.value = fCategory.value = "All"; update(); });
+update();
+</script>
+</body>
+</html>
